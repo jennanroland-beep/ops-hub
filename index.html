@@ -3221,6 +3221,7 @@ var _driveGapiReady = false;
 var _driveTokenClient = null;
 var _driveSaveTimer = null;
 var _driveRefreshTimer = null;
+var _drivePullComplete = false; // prevent saving to Drive before pull is done
 
 function driveStatusClick(){
   if(_driveGapiReady) driveBackupNow();
@@ -3309,9 +3310,11 @@ async function drivePullAndMerge(){
       data = loadData();
       renderGrid();
       renderBigProjects();
+      _drivePullComplete = true;
       driveSetStatus('synced');
     } else {
       // No backup yet — push current data
+      _drivePullComplete = true;
       await driveBackupNow();
       driveSetStatus('synced');
     }
@@ -3319,7 +3322,7 @@ async function drivePullAndMerge(){
 }
 
 function driveScheduleSave(){
-  if(!_driveGapiReady) return;
+  if(!_driveGapiReady || !_drivePullComplete) return;
   clearTimeout(_driveSaveTimer);
   driveSetStatus('syncing');
   _driveSaveTimer = setTimeout(driveBackupNow, 2000);
