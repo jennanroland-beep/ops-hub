@@ -2763,6 +2763,7 @@ data=loadData();
   if(changed)saveData(data);
 }());
 
+data = loadData(); // ensure latest localStorage state is in memory before render
 renderGrid();
 renderDeadlinePanel();
 document.getElementById('logDatePicker').value=currentLogDate;
@@ -3241,12 +3242,55 @@ function driveSignIn(){
       if(resp.error){ setDriveStatus('error'); return; }
       _driveToken = resp.access_token;
       _driveReady = true;
-      setDriveStatus('synced');
-      driveBackupNow();
+      setDriveStatus('syncing');
       scheduleTokenRefreshReminder();
+      // Pull from Drive first — if Drive has data, restore it, then push current state
+      drivePullAndMerge();
     }
   });
   client.requestAccessToken();
+}
+
+function drivePullAndMerge(){
+  // Find backup file in Drive
+  fetch("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27"+GDRIVE_BACKUP_FILENAME+"%27&fields=files(id,name)", {
+    headers: {Authorization: 'Bearer '+_driveToken}
+  }).then(function(r){return r.json();}).then(function(res){
+    if(res.files && res.files.length > 0){
+      var fileId = res.files[0].id;
+      _driveFileId = fileId;
+      localStorage.setItem('ops-drive-file-id', fileId);
+      // Pull the backup content
+      fetch('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {
+        headers: {Authorization: 'Bearer '+_driveToken}
+      }).then(function(r){return r.json();}).then(function(backup){
+        // Check if Drive backup has more projects than current localStorage
+        var driveData = null;
+        try { driveData = JSON.parse(backup['ops-pulse-v4-May 2026']||'{}'); } catch(e){}
+        var localData = JSON.parse(localStorage.getItem('ops-pulse-v4-May 2026')||'{}');
+        var driveProjectCount = driveData ? Object.values(driveData).reduce(function(n,v){return n+(v.projects||[]).length;},0) : 0;
+        var localProjectCount = Object.values(localData).reduce(function(n,v){return n+(v.projects||[]).length;},0);
+        if(driveProjectCount > localProjectCount){
+          // Drive has more data — restore all keys from Drive
+          Object.entries(backup).forEach(function(entry){
+            if(entry[0].startsWith('ops-')) localStorage.setItem(entry[0], entry[1]);
+          });
+          data = loadData();
+          renderGrid();
+          renderBigProjects();
+          setDriveStatus('synced');
+        } else {
+          // Local is up to date — just push to Drive
+          driveBackupNow();
+          setDriveStatus('synced');
+        }
+      }).catch(function(){ driveBackupNow(); setDriveStatus('synced'); });
+    } else {
+      // No backup in Drive yet — push current data
+      driveBackupNow();
+      setDriveStatus('synced');
+    }
+  }).catch(function(){ setDriveStatus('error'); });
 }
 
 function setDriveStatus(state){
