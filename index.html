@@ -2763,7 +2763,15 @@ data=loadData();
   if(changed)saveData(data);
 }());
 
-data = loadData(); // ensure latest localStorage state is in memory before render
+data = loadData();
+// Strip any legacy 'hidden' flags from projects — these caused done projects to not render
+FUNCTIONS.forEach(function(fn){
+  var cd = data[fn]; if(!cd||!cd.projects) return;
+  var changed = false;
+  cd.projects.forEach(function(p){ if(p&&p.hidden){ delete p.hidden; changed=true; } });
+  if(changed){ data[fn]=cd; }
+});
+saveData(data);
 renderGrid();
 renderDeadlinePanel();
 document.getElementById('logDatePicker').value=currentLogDate;
@@ -3303,8 +3311,9 @@ async function drivePullAndMerge(){
       var content = await gapi.client.drive.files.get({fileId:_driveFileId, alt:'media'});
       var backup = typeof content.result === 'string' ? JSON.parse(content.result) : content.result;
       var written = 0;
+      var skipKeys = ['ops-drive-file-id', 'ops-projects-seeded-v1', 'ops-deadlines-cleared-v1'];
       Object.keys(backup).forEach(function(k){
-        if(k.startsWith('ops-')){ localStorage.setItem(k, backup[k]); written++; }
+        if(k.startsWith('ops-') && skipKeys.indexOf(k) === -1){ localStorage.setItem(k, backup[k]); written++; }
       });
       console.log('Drive restore: wrote', written, 'keys');
       data = loadData();
@@ -3334,7 +3343,10 @@ function driveScheduleSave(){
 async function driveBackupNow(){
   if(!_driveGapiReady) return;
   var backup = {};
-  Object.keys(localStorage).filter(function(k){return k.startsWith('ops-');}).forEach(function(k){
+  var skipKeys = ['ops-drive-file-id', 'ops-projects-seeded-v1', 'ops-deadlines-cleared-v1'];
+  Object.keys(localStorage).filter(function(k){
+    return k.startsWith('ops-') && skipKeys.indexOf(k) === -1;
+  }).forEach(function(k){
     backup[k] = localStorage.getItem(k);
   });
   var body = JSON.stringify(backup);
