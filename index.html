@@ -2785,7 +2785,10 @@ document.getElementById('logDatePicker').value=currentLogDate;
   document.getElementById('cnt-escalation').textContent=counts['escalation'];
 }());
 
-// Show Drive connect banner on load
+// Save to Drive when tab is closed/refreshed
+window.addEventListener('beforeunload', function(){
+  if(_driveGapiReady && _drivePullComplete) driveBackupNow();
+});
 setTimeout(function(){
   var banner = document.createElement('div');
   banner.id = 'drive-connect-banner';
@@ -3304,7 +3307,7 @@ function scheduleTokenRefreshReminder(){
 
 async function drivePullAndMerge(){
   try {
-    var res = await gapi.client.drive.files.list({spaces:'appDataFolder',q:"name='"+GDRIVE_BACKUP_FILENAME+"'",fields:'files(id,name)'});
+    var res = await gapi.client.drive.files.list({spaces:'appDataFolder',q:"name='"+GDRIVE_BACKUP_FILENAME+"'",fields:'files(id,name,modifiedTime)',orderBy:'modifiedTime desc'});
     var files = res.result.files;
     if(files && files.length > 0){
       _driveFileId = files[0].id;
@@ -3317,6 +3320,15 @@ async function drivePullAndMerge(){
       });
       console.log('Drive restore: wrote', written, 'keys');
       data = loadData();
+      // Strip hidden flags from restored data
+      FUNCTIONS.forEach(function(fn){
+        var cd = data[fn]; if(!cd||!cd.projects) return;
+        var changed = false;
+        cd.projects.forEach(function(p){ if(p&&p.hidden){ delete p.hidden; changed=true; } });
+        if(changed){ data[fn]=cd; }
+      });
+      // Save cleaned data back (using orig to avoid Drive loop)
+      _origSaveData(data);
       renderGrid();
       setTimeout(function(){
         data = loadData();
@@ -3337,7 +3349,7 @@ function driveScheduleSave(){
   if(!_driveGapiReady || !_drivePullComplete) return;
   clearTimeout(_driveSaveTimer);
   driveSetStatus('syncing');
-  _driveSaveTimer = setTimeout(driveBackupNow, 2000);
+  _driveSaveTimer = setTimeout(driveBackupNow, 500);
 }
 
 async function driveBackupNow(){
@@ -3371,6 +3383,20 @@ saveData = function(d, m){
   driveScheduleSave();
 };
 
+// Hook into saveAdhocData to trigger Drive sync
+var _origSaveAdhocData = saveAdhocData;
+saveAdhocData = function(d){
+  _origSaveAdhocData(d);
+  driveScheduleSave();
+};
+
+// Hook into saveLogData to trigger Drive sync
+var _origSaveLogData = saveLogData;
+saveLogData = function(ds, d){
+  _origSaveLogData(ds, d);
+  driveScheduleSave();
+};
+
 
 
 
@@ -3395,8 +3421,9 @@ function restoreBackup(input){
     try {
       var backup = JSON.parse(e.target.result);
       var count = 0;
+      var skipKeys = ['ops-drive-file-id'];
       Object.entries(backup).forEach(function(entry){
-        if(entry[0].startsWith('ops-')){ localStorage.setItem(entry[0], entry[1]); count++; }
+        if(entry[0].startsWith('ops-') && skipKeys.indexOf(entry[0])===-1){ localStorage.setItem(entry[0], entry[1]); count++; }
       });
       alert('Restored ' + count + ' data keys. Reloading now.');
       location.reload();
