@@ -3252,7 +3252,6 @@ function driveSignIn(){
 }
 
 function drivePullAndMerge(){
-  // Find backup file in Drive
   fetch("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27"+GDRIVE_BACKUP_FILENAME+"%27&fields=files(id,name)", {
     headers: {Authorization: 'Bearer '+_driveToken}
   }).then(function(r){return r.json();}).then(function(res){
@@ -3260,30 +3259,41 @@ function drivePullAndMerge(){
       var fileId = res.files[0].id;
       _driveFileId = fileId;
       localStorage.setItem('ops-drive-file-id', fileId);
-      // Pull the backup content
       fetch('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {
         headers: {Authorization: 'Bearer '+_driveToken}
       }).then(function(r){return r.json();}).then(function(backup){
-        // Check if Drive backup has more projects than current localStorage
-        var driveData = null;
-        try { driveData = JSON.parse(backup['ops-pulse-v4-May 2026']||'{}'); } catch(e){}
-        var localData = JSON.parse(localStorage.getItem('ops-pulse-v4-May 2026')||'{}');
-        var driveProjectCount = driveData ? Object.values(driveData).reduce(function(n,v){return n+(v.projects||[]).length;},0) : 0;
-        var localProjectCount = Object.values(localData).reduce(function(n,v){return n+(v.projects||[]).length;},0);
-        if(driveProjectCount > localProjectCount){
-          // Drive has more data — restore all keys from Drive
-          Object.entries(backup).forEach(function(entry){
-            if(entry[0].startsWith('ops-')) localStorage.setItem(entry[0], entry[1]);
-          });
-          data = loadData();
-          renderGrid();
-          renderBigProjects();
-          setDriveStatus('synced');
-        } else {
-          // Local is up to date — just push to Drive
-          driveBackupNow();
-          setDriveStatus('synced');
-        }
+        // Always restore all keys from Drive, then push current localStorage on top
+        // Merge: Drive wins for any key it has, localStorage wins for keys Drive doesn't have
+        var merged = {};
+        // Start with Drive data
+        Object.entries(backup).forEach(function(entry){
+          if(entry[0].startsWith('ops-')) merged[entry[0]] = entry[1];
+        });
+        // For pulse data, pick whichever has more projects
+        ['ops-pulse-v4-May 2026','ops-pulse-v4-April 2026'].forEach(function(k){
+          var driveVal = merged[k];
+          var localVal = localStorage.getItem(k);
+          if(!driveVal && localVal){ merged[k] = localVal; return; }
+          if(!localVal && driveVal){ return; }
+          if(driveVal && localVal){
+            try {
+              var dd = JSON.parse(driveVal); var ld = JSON.parse(localVal);
+              var dc = Object.values(dd).reduce(function(n,v){return n+(v.projects||[]).length;},0);
+              var lc = Object.values(ld).reduce(function(n,v){return n+(v.projects||[]).length;},0);
+              merged[k] = lc >= dc ? localVal : driveVal;
+            } catch(e){ merged[k] = localVal || driveVal; }
+          }
+        });
+        // Write merged data to localStorage
+        Object.entries(merged).forEach(function(entry){
+          localStorage.setItem(entry[0], entry[1]);
+        });
+        data = loadData();
+        renderGrid();
+        renderBigProjects();
+        setDriveStatus('synced');
+        // Push the merged result back to Drive
+        setTimeout(driveBackupNow, 500);
       }).catch(function(){ driveBackupNow(); setDriveStatus('synced'); });
     } else {
       // No backup in Drive yet — push current data
