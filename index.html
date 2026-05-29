@@ -3209,6 +3209,23 @@ var _driveToken = null;
 var _driveFileId = localStorage.getItem('ops-drive-file-id') || null;
 var _driveSaveTimer = null;
 var _driveReady = false;
+var _driveRefreshTimer = null;
+
+function scheduleTokenRefreshReminder(){
+  clearTimeout(_driveRefreshTimer);
+  _driveRefreshTimer = setTimeout(function(){
+    setDriveStatus('expired');
+    // Non-blocking banner instead of alert
+    var banner = document.getElementById('drive-refresh-banner');
+    if(!banner){
+      banner = document.createElement('div');
+      banner.id = 'drive-refresh-banner';
+      banner.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1A1714;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:500;padding:14px 20px;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.3);z-index:9999;display:flex;align-items:center;gap:12px;';
+      banner.innerHTML = '☁ Drive token expired — <button onclick="driveSignIn();this.closest(\'#drive-refresh-banner\').remove();" style="font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;color:#fff;background:#3D5A8A;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;">Reconnect</button><button onclick="this.closest(\'#drive-refresh-banner\').remove();" style="background:none;border:none;color:#888;cursor:pointer;font-size:16px;padding:0 4px;">×</button>';
+      document.body.appendChild(banner);
+    }
+  }, 55 * 60 * 1000); // 55 minutes
+}
 
 function driveStatusClick(){
   if(_driveToken) driveBackupNow();
@@ -3226,6 +3243,7 @@ function driveSignIn(){
       _driveReady = true;
       setDriveStatus('synced');
       driveBackupNow();
+      scheduleTokenRefreshReminder();
     }
   });
   client.requestAccessToken();
@@ -3243,6 +3261,9 @@ function setDriveStatus(state){
   } else if(state==='error'){
     el.style.background='#FEE'; el.style.color='#C00'; el.style.borderColor='#FAA';
     el.textContent='☁ Sync failed';
+  } else if(state==='expired'){
+    el.style.background='#FFF5E6'; el.style.color='#A05A00'; el.style.borderColor='#F0C070';
+    el.textContent='☁ Token expired';
   } else {
     el.style.background='#F0F0F0'; el.style.color='#888'; el.style.borderColor='#ddd';
     el.textContent='☁ Connect Drive';
