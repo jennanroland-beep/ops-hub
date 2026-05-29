@@ -3309,9 +3309,12 @@ async function drivePullAndMerge(){
       console.log('Drive restore: wrote', written, 'keys');
       data = loadData();
       renderGrid();
-      renderBigProjects();
-      _drivePullComplete = true;
-      driveSetStatus('synced');
+      setTimeout(function(){
+        data = loadData();
+        renderBigProjects();
+        _drivePullComplete = true;
+        driveSetStatus('synced');
+      }, 300);
     } else {
       // No backup yet — push current data
       _drivePullComplete = true;
