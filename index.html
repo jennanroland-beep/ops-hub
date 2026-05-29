@@ -508,7 +508,7 @@
         <button class="btn btn-pdf" onclick="exportPDF()" style="font-size:11.5px;padding:6px 14px;">Export PDF</button>
         <button onclick="saveBackup()" style="font-family:'DM Sans',sans-serif;font-size:11.5px;font-weight:600;color:#fff;background:#3D5A8A;border:none;border-radius:20px;padding:6px 14px;cursor:pointer;" title="Download full data backup as JSON">💾 Save Backup</button>
         <label style="font-family:'DM Sans',sans-serif;font-size:11.5px;font-weight:600;color:#3D5A8A;background:#EEF2FA;border:1.5px solid #3D5A8A;border-radius:20px;padding:6px 14px;cursor:pointer;" title="Restore from a JSON backup file">↩ Restore<input type="file" accept=".json" onchange="restoreBackup(this)" style="display:none;"></label>
-        <span id="drive-status" onclick="driveStatusClick()" style="font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:6px 12px;border-radius:20px;cursor:pointer;background:#F0F0F0;color:#888;border:1.5px solid #ddd;" title="Google Drive auto-backup">☁ Connect Drive</span>
+        <span id="drive-status" onclick="driveInit()" style="font-family:'DM Sans',sans-serif;font-size:11px;font-weight:600;padding:6px 12px;border-radius:20px;cursor:pointer;background:#F0F0F0;color:#888;border:1.5px solid #ddd;" title="Google Drive auto-backup">☁ Connect Drive</span>
       </div>
       <div class="legend">
         <div class="legend-item"><div class="legend-dot" style="background:var(--on-track-dot)"></div> On Track</div>
@@ -2777,17 +2777,14 @@ document.getElementById('logDatePicker').value=currentLogDate;
   document.getElementById('cnt-escalation').textContent=counts['escalation'];
 }());
 
-// Auto sign-in to Drive on page load (after Google API has time to load)
+// Show Drive connect banner on load
 setTimeout(function(){
-  if(typeof google !== 'undefined' && google.accounts){
-    driveSignIn();
-  } else {
-    // If Google API not loaded yet, wait a bit longer
-    setTimeout(function(){
-      if(typeof google !== 'undefined' && google.accounts) driveSignIn();
-    }, 2000);
-  }
-}, 800);
+  var banner = document.createElement('div');
+  banner.id = 'drive-connect-banner';
+  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;background:#3D5A8A;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:500;padding:10px 20px;display:flex;align-items:center;justify-content:center;gap:14px;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.2);';
+  banner.innerHTML = '☁ Connect Google Drive to load your data <button onclick="driveInit();document.getElementById(\'drive-connect-banner\').remove();" style="font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;color:#3D5A8A;background:#fff;border:none;border-radius:6px;padding:6px 16px;cursor:pointer;">Connect Drive</button><button onclick="document.getElementById(\'drive-connect-banner\').remove();" style="background:none;border:none;color:rgba(255,255,255,0.7);cursor:pointer;font-size:18px;padding:0 4px;">×</button>';
+  document.body.appendChild(banner);
+}, 500);
 
 // Event delegation for log task delete (handles dynamically rendered buttons)
 document.getElementById('tab-log').addEventListener('click',function(e){
@@ -3213,93 +3210,55 @@ function deleteBPItem(btn){
   renderProjects(fnIdx, cd.projects||[]);
 }
 // ═══════════════════════════════════════════════════════
-// GOOGLE DRIVE AUTO-BACKUP
+// GOOGLE DRIVE AUTO-BACKUP (gapi approach)
 // ═══════════════════════════════════════════════════════
 var GDRIVE_CLIENT_ID = '611725188556-24rhq30qu354vpijqodqaq1cdvd194gs.apps.googleusercontent.com';
+var GDRIVE_API_KEY = 'AIzaSyDFpGXdG2E6_cBiDh7Xz0va8Peh53YBQwk';
 var GDRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 var GDRIVE_BACKUP_FILENAME = 'ops-hub-backup.json';
-var _driveToken = null;
-var _driveFileId = localStorage.getItem('ops-drive-file-id') || null;
+var _driveFileId = null;
+var _driveGapiReady = false;
+var _driveTokenClient = null;
 var _driveSaveTimer = null;
-var _driveReady = false;
 var _driveRefreshTimer = null;
 
-function scheduleTokenRefreshReminder(){
-  clearTimeout(_driveRefreshTimer);
-  _driveRefreshTimer = setTimeout(function(){
-    setDriveStatus('expired');
-    // Non-blocking banner instead of alert
-    var banner = document.getElementById('drive-refresh-banner');
-    if(!banner){
-      banner = document.createElement('div');
-      banner.id = 'drive-refresh-banner';
-      banner.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1A1714;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:500;padding:14px 20px;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.3);z-index:9999;display:flex;align-items:center;gap:12px;';
-      banner.innerHTML = '☁ Drive token expired — <button onclick="driveSignIn();this.closest(\'#drive-refresh-banner\').remove();" style="font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;color:#fff;background:#3D5A8A;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;">Reconnect</button><button onclick="this.closest(\'#drive-refresh-banner\').remove();" style="background:none;border:none;color:#888;cursor:pointer;font-size:16px;padding:0 4px;">×</button>';
-      document.body.appendChild(banner);
-    }
-  }, 55 * 60 * 1000); // 55 minutes
-}
-
 function driveStatusClick(){
-  if(_driveToken) driveBackupNow();
-  else driveSignIn();
+  if(_driveGapiReady) driveBackupNow();
+  else driveInit();
 }
 
-function driveSignIn(){
-  if(typeof google === 'undefined'){ alert('Google API not loaded yet. Try again in a moment.'); return; }
-  var client = google.accounts.oauth2.initTokenClient({
-    client_id: GDRIVE_CLIENT_ID,
-    scope: GDRIVE_SCOPE,
-    callback: function(resp){
-      if(resp.error){ setDriveStatus('error'); return; }
-      _driveToken = resp.access_token;
-      _driveReady = true;
-      setDriveStatus('syncing');
-      scheduleTokenRefreshReminder();
-      // Pull from Drive first — if Drive has data, restore it, then push current state
-      drivePullAndMerge();
-    }
-  });
-  client.requestAccessToken();
-}
-
-function drivePullAndMerge(){
-  fetch("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27"+GDRIVE_BACKUP_FILENAME+"%27&fields=files(id,name)", {
-    headers: {Authorization: 'Bearer '+_driveToken}
-  }).then(function(r){return r.json();}).then(function(res){
-    if(res.files && res.files.length > 0){
-      var fileId = res.files[0].id;
-      _driveFileId = fileId;
-      localStorage.setItem('ops-drive-file-id', fileId);
-      fetch('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {
-        headers: {Authorization: 'Bearer '+_driveToken}
-      }).then(function(r){return r.json();}).then(function(backup){
-        // backup is {key: stringified-value} — write each key directly to localStorage
-        var written = 0;
-        Object.keys(backup).forEach(function(k){
-          if(k.startsWith('ops-')){
-            localStorage.setItem(k, backup[k]);
-            written++;
+function driveInit(){
+  driveSetStatus('connecting');
+  function tryInit(){
+    if(typeof gapi==='undefined'||typeof google==='undefined'){setTimeout(tryInit,400);return;}
+    gapi.load('client',function(){
+      gapi.client.setApiKey(GDRIVE_API_KEY);
+      gapi.client.load('https://www.googleapis.com/discovery/v1/apis/drive/v3/rest').then(function(){
+        _driveTokenClient = google.accounts.oauth2.initTokenClient({
+          client_id: GDRIVE_CLIENT_ID,
+          scope: GDRIVE_SCOPE,
+          callback: function(resp){
+            if(resp.error){ console.error('OAuth error:',resp.error); driveSetStatus('error'); return; }
+            _driveGapiReady = true;
+            driveSetStatus('syncing');
+            scheduleTokenRefreshReminder();
+            drivePullAndMerge();
           }
         });
-        console.log('Drive restore: wrote', written, 'keys');
-        data = loadData();
-        renderGrid();
-        renderBigProjects();
-        setDriveStatus('synced');
-      }).catch(function(e){ console.log('Drive pull error:', e); setDriveStatus('error'); });
-    } else {
-      // No backup in Drive yet — push current data
-      driveBackupNow();
-      setDriveStatus('synced');
-    }
-  }).catch(function(){ setDriveStatus('error'); });
+        _driveTokenClient.requestAccessToken({prompt:''});
+      }).catch(function(e){ console.error('Drive API load error:',e); driveSetStatus('error'); });
+    });
+  }
+  tryInit();
 }
 
-function setDriveStatus(state){
+function driveSetStatus(state){
   var el = document.getElementById('drive-status');
   if(!el) return;
-  if(state==='syncing'){
+  if(state==='connecting'){
+    el.style.background='#FFF5E6'; el.style.color='#A05A00'; el.style.borderColor='#F0C070';
+    el.textContent='☁ Connecting…';
+  } else if(state==='syncing'){
     el.style.background='#FFF5E6'; el.style.color='#A05A00'; el.style.borderColor='#F0C070';
     el.textContent='☁ Saving…';
   } else if(state==='synced'){
@@ -3316,94 +3275,75 @@ function setDriveStatus(state){
     el.textContent='☁ Connect Drive';
   }
 }
+// Keep old name working too
+function setDriveStatus(s){ driveSetStatus(s); }
+
+function scheduleTokenRefreshReminder(){
+  clearTimeout(_driveRefreshTimer);
+  _driveRefreshTimer = setTimeout(function(){
+    driveSetStatus('expired');
+    var banner = document.getElementById('drive-refresh-banner');
+    if(!banner){
+      banner = document.createElement('div');
+      banner.id = 'drive-refresh-banner';
+      banner.style.cssText = 'position:fixed;bottom:24px;right:24px;background:#1A1714;color:#fff;font-family:\'DM Sans\',sans-serif;font-size:13px;font-weight:500;padding:14px 20px;border-radius:10px;box-shadow:0 4px 20px rgba(0,0,0,0.3);z-index:9999;display:flex;align-items:center;gap:12px;';
+      banner.innerHTML = '☁ Drive token expired — <button onclick="driveInit();this.closest(\'#drive-refresh-banner\').remove();" style="font-family:\'DM Sans\',sans-serif;font-size:12px;font-weight:700;color:#fff;background:#3D5A8A;border:none;border-radius:6px;padding:5px 12px;cursor:pointer;">Reconnect</button><button onclick="this.closest(\'#drive-refresh-banner\').remove();" style="background:none;border:none;color:#888;cursor:pointer;font-size:16px;padding:0 4px;">×</button>';
+      document.body.appendChild(banner);
+    }
+  }, 55 * 60 * 1000);
+}
+
+async function drivePullAndMerge(){
+  try {
+    var res = await gapi.client.drive.files.list({spaces:'appDataFolder',q:"name='"+GDRIVE_BACKUP_FILENAME+"'",fields:'files(id,name)'});
+    var files = res.result.files;
+    if(files && files.length > 0){
+      _driveFileId = files[0].id;
+      var content = await gapi.client.drive.files.get({fileId:_driveFileId, alt:'media'});
+      var backup = typeof content.result === 'string' ? JSON.parse(content.result) : content.result;
+      var written = 0;
+      Object.keys(backup).forEach(function(k){
+        if(k.startsWith('ops-')){ localStorage.setItem(k, backup[k]); written++; }
+      });
+      console.log('Drive restore: wrote', written, 'keys');
+      data = loadData();
+      renderGrid();
+      renderBigProjects();
+      driveSetStatus('synced');
+    } else {
+      // No backup yet — push current data
+      await driveBackupNow();
+      driveSetStatus('synced');
+    }
+  } catch(e){ console.error('Drive pull error:',e); driveSetStatus('error'); }
+}
 
 function driveScheduleSave(){
-  if(!_driveReady || !_driveToken) return;
+  if(!_driveGapiReady) return;
   clearTimeout(_driveSaveTimer);
-  setDriveStatus('syncing');
+  driveSetStatus('syncing');
   _driveSaveTimer = setTimeout(driveBackupNow, 2000);
 }
 
-function driveBackupNow(){
-  if(!_driveToken) return;
+async function driveBackupNow(){
+  if(!_driveGapiReady) return;
   var backup = {};
   Object.keys(localStorage).filter(function(k){return k.startsWith('ops-');}).forEach(function(k){
     backup[k] = localStorage.getItem(k);
   });
-  var content = JSON.stringify(backup, null, 2);
-  if(_driveFileId){
-    drivePatchFile(_driveFileId, content);
-  } else {
-    driveFindOrCreateFile(content);
-  }
-}
-
-function driveFindOrCreateFile(content){
-  // Search appDataFolder for existing backup file
-  fetch("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27"+GDRIVE_BACKUP_FILENAME+"%27&fields=files(id,name)", {
-    headers: {Authorization: 'Bearer '+_driveToken}
-  }).then(function(r){return r.json();}).then(function(res){
-    if(res.files && res.files.length > 0){
-      _driveFileId = res.files[0].id;
-      localStorage.setItem('ops-drive-file-id', _driveFileId);
-      drivePatchFile(_driveFileId, content);
+  var body = JSON.stringify(backup);
+  try {
+    if(_driveFileId){
+      await gapi.client.request({path:'/upload/drive/v3/files/'+_driveFileId,method:'PATCH',params:{uploadType:'media'},headers:{'Content-Type':'application/json'},body:body});
     } else {
-      driveCreateFile(content);
+      var b = 'ops_boundary';
+      var meta = JSON.stringify({name:GDRIVE_BACKUP_FILENAME,parents:['appDataFolder']});
+      var mp = '--'+b+'\r\nContent-Type: application/json\r\n\r\n'+meta+'\r\n--'+b+'\r\nContent-Type: application/json\r\n\r\n'+body+'\r\n--'+b+'--';
+      var r = await gapi.client.request({path:'/upload/drive/v3/files',method:'POST',params:{uploadType:'multipart'},headers:{'Content-Type':'multipart/related; boundary="'+b+'"'},body:mp});
+      _driveFileId = r.result.id;
     }
-  }).catch(function(){ setDriveStatus('error'); });
-}
-
-function driveCreateFile(content){
-  var metadata = {name: GDRIVE_BACKUP_FILENAME, parents: ['appDataFolder']};
-  var boundary = 'ops_hub_boundary';
-  var body = '--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+JSON.stringify(metadata)+
-    '\r\n--'+boundary+'\r\nContent-Type: application/json\r\n\r\n'+content+'\r\n--'+boundary+'--';
-  fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
-    method: 'POST',
-    headers: {Authorization:'Bearer '+_driveToken, 'Content-Type':'multipart/related; boundary='+boundary},
-    body: body
-  }).then(function(r){return r.json();}).then(function(res){
-    if(res.id){
-      _driveFileId = res.id;
-      localStorage.setItem('ops-drive-file-id', _driveFileId);
-      setDriveStatus('synced');
-    } else { setDriveStatus('error'); }
-  }).catch(function(){ setDriveStatus('error'); });
-}
-
-function drivePatchFile(fileId, content){
-  fetch('https://www.googleapis.com/upload/drive/v3/files/'+fileId+'?uploadType=media', {
-    method: 'PATCH',
-    headers: {Authorization:'Bearer '+_driveToken, 'Content-Type':'application/json'},
-    body: content
-  }).then(function(r){
-    if(r.ok) setDriveStatus('synced');
-    else setDriveStatus('error');
-  }).catch(function(){ setDriveStatus('error'); });
-}
-
-function driveRestoreLatest(){
-  if(!_driveToken){ driveSignIn(); return; }
-  driveFindBackupFile(function(fileId){
-    if(!fileId){ alert('No backup found in Google Drive.'); return; }
-    fetch('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {
-      headers: {Authorization:'Bearer '+_driveToken}
-    }).then(function(r){return r.json();}).then(function(backup){
-      Object.entries(backup).forEach(function(entry){
-        if(entry[0].startsWith('ops-')) localStorage.setItem(entry[0], entry[1]);
-      });
-      alert('Restored from Google Drive. Reloading.');
-      location.reload();
-    }).catch(function(){ alert('Could not read backup from Drive.'); });
-  });
-}
-
-function driveFindBackupFile(cb){
-  fetch("https://www.googleapis.com/drive/v3/files?spaces=appDataFolder&q=name%3D%27"+GDRIVE_BACKUP_FILENAME+"%27&fields=files(id)", {
-    headers: {Authorization:'Bearer '+_driveToken}
-  }).then(function(r){return r.json();}).then(function(res){
-    cb(res.files&&res.files.length>0 ? res.files[0].id : null);
-  }).catch(function(){ cb(null); });
+    driveSetStatus('synced');
+  } catch(e){ console.error('Drive save error:',e); driveSetStatus('error'); }
 }
 
 // Hook into saveData to trigger Drive sync on every save
@@ -3412,6 +3352,8 @@ saveData = function(d, m){
   _origSaveData(d, m);
   driveScheduleSave();
 };
+
+
 
 
 // ═══════════════════════════════════════════════════════
