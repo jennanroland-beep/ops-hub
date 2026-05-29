@@ -2777,6 +2777,18 @@ document.getElementById('logDatePicker').value=currentLogDate;
   document.getElementById('cnt-escalation').textContent=counts['escalation'];
 }());
 
+// Auto sign-in to Drive on page load (after Google API has time to load)
+setTimeout(function(){
+  if(typeof google !== 'undefined' && google.accounts){
+    driveSignIn();
+  } else {
+    // If Google API not loaded yet, wait a bit longer
+    setTimeout(function(){
+      if(typeof google !== 'undefined' && google.accounts) driveSignIn();
+    }, 2000);
+  }
+}, 800);
+
 // Event delegation for log task delete (handles dynamically rendered buttons)
 document.getElementById('tab-log').addEventListener('click',function(e){
   var btn=e.target.closest('[data-delidx]');
@@ -3262,39 +3274,20 @@ function drivePullAndMerge(){
       fetch('https://www.googleapis.com/drive/v3/files/'+fileId+'?alt=media', {
         headers: {Authorization: 'Bearer '+_driveToken}
       }).then(function(r){return r.json();}).then(function(backup){
-        // Always restore all keys from Drive, then push current localStorage on top
-        // Merge: Drive wins for any key it has, localStorage wins for keys Drive doesn't have
-        var merged = {};
-        // Start with Drive data
-        Object.entries(backup).forEach(function(entry){
-          if(entry[0].startsWith('ops-')) merged[entry[0]] = entry[1];
-        });
-        // For pulse data, pick whichever has more projects
-        ['ops-pulse-v4-May 2026','ops-pulse-v4-April 2026'].forEach(function(k){
-          var driveVal = merged[k];
-          var localVal = localStorage.getItem(k);
-          if(!driveVal && localVal){ merged[k] = localVal; return; }
-          if(!localVal && driveVal){ return; }
-          if(driveVal && localVal){
-            try {
-              var dd = JSON.parse(driveVal); var ld = JSON.parse(localVal);
-              var dc = Object.values(dd).reduce(function(n,v){return n+(v.projects||[]).length;},0);
-              var lc = Object.values(ld).reduce(function(n,v){return n+(v.projects||[]).length;},0);
-              merged[k] = lc >= dc ? localVal : driveVal;
-            } catch(e){ merged[k] = localVal || driveVal; }
+        // backup is {key: stringified-value} — write each key directly to localStorage
+        var written = 0;
+        Object.keys(backup).forEach(function(k){
+          if(k.startsWith('ops-')){
+            localStorage.setItem(k, backup[k]);
+            written++;
           }
         });
-        // Write merged data to localStorage
-        Object.entries(merged).forEach(function(entry){
-          localStorage.setItem(entry[0], entry[1]);
-        });
+        console.log('Drive restore: wrote', written, 'keys');
         data = loadData();
         renderGrid();
         renderBigProjects();
         setDriveStatus('synced');
-        // Push the merged result back to Drive
-        setTimeout(driveBackupNow, 500);
-      }).catch(function(){ driveBackupNow(); setDriveStatus('synced'); });
+      }).catch(function(e){ console.log('Drive pull error:', e); setDriveStatus('error'); });
     } else {
       // No backup in Drive yet — push current data
       driveBackupNow();
