@@ -2785,9 +2785,17 @@ document.getElementById('logDatePicker').value=currentLogDate;
   document.getElementById('cnt-escalation').textContent=counts['escalation'];
 }());
 
-// Save to Drive when tab is closed/refreshed
-window.addEventListener('beforeunload', function(){
-  if(_driveGapiReady && _drivePullComplete) driveBackupNow();
+// Warn and attempt save when tab is closed with pending changes
+window.addEventListener('beforeunload', function(e){
+  if(!_driveGapiReady || !_drivePullComplete) return;
+  // Clear any pending debounce and save immediately
+  clearTimeout(_driveSaveTimer);
+  _drivePendingSave = false;
+  driveBackupNow(); // fires async — may not complete but worth trying
+  if(_drivePendingSave){
+    e.preventDefault();
+    e.returnValue = 'Changes may not have saved to Drive yet. Wait a moment before closing.';
+  }
 });
 setTimeout(function(){
   var banner = document.createElement('div');
@@ -3345,11 +3353,30 @@ async function drivePullAndMerge(){
   } catch(e){ console.error('Drive pull error:',e); driveSetStatus('error'); }
 }
 
+var _drivePendingSave = false;
+var _driveLastSave = 0;
+var _driveThrottleMs = 10000; // max one Drive save per 10 seconds
+
 function driveScheduleSave(){
   if(!_driveGapiReady || !_drivePullComplete) return;
-  clearTimeout(_driveSaveTimer);
+  _drivePendingSave = true;
   driveSetStatus('syncing');
-  _driveSaveTimer = setTimeout(driveBackupNow, 500);
+  clearTimeout(_driveSaveTimer);
+  var now = Date.now();
+  var timeSinceLast = now - _driveLastSave;
+  if(timeSinceLast >= _driveThrottleMs){
+    // Enough time has passed — save immediately
+    _drivePendingSave = false;
+    _driveLastSave = now;
+    driveBackupNow();
+  } else {
+    // Too soon — schedule for when throttle expires
+    _driveSaveTimer = setTimeout(function(){
+      _drivePendingSave = false;
+      _driveLastSave = Date.now();
+      driveBackupNow();
+    }, _driveThrottleMs - timeSinceLast);
+  }
 }
 
 async function driveBackupNow(){
@@ -3394,6 +3421,13 @@ saveAdhocData = function(d){
 var _origSaveLogData = saveLogData;
 saveLogData = function(ds, d){
   _origSaveLogData(ds, d);
+  driveScheduleSave();
+};
+
+// Hook into saveDLComments to trigger Drive sync
+var _origSaveDLComments = saveDLComments;
+saveDLComments = function(c){
+  _origSaveDLComments(c);
   driveScheduleSave();
 };
 
