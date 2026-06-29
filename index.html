@@ -1565,7 +1565,14 @@ function renderTPWeekly(){
   var allProjects=getAllProjects();
 
   function buildSection(runType,label,icon){
-    var items=allTodosIncDone.filter(function(t){return(t.todo.runType||'short')===runType&&!t.todo.paused&&t.inView;});
+    var items=allTodosIncDone.filter(function(t){
+      if(!t.inView) return false;
+      if((t.todo.runType||'short')!==runType) return false;
+      if(t.todo.paused) return false;
+      // Hide done tasks on current week — show them on past weeks only
+      if(t.todo.done && isCurrentWeek) return false;
+      return true;
+    });
     if(!items.length)return'';
     var html='<div class="tp-run-section"><div class="tp-run-header"><span class="tp-run-label">'+icon+' '+label+'</span><span class="tp-run-count">'+items.filter(function(t){return!t.todo.done;}).length+' active</span></div>';
     items.forEach(function(item,itemIdx){
